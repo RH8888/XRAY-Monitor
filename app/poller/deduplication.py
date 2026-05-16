@@ -1,30 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Iterable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.repositories import RawLogRepository
-
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def normalize_log_line(line: str) -> str:
-    """Return the canonical representation used for duplicate detection.
-
-    Normalization intentionally does not remove or reinterpret timestamps; duplicate detection must
-    be based on the normalized full line hash, never timestamp ordering or timestamp windows.
-    """
-
-    return _WHITESPACE_RE.sub(" ", line.replace("\x00", "").strip())
-
-
-def hash_normalized_line(normalized_line: str) -> str:
-    """Generate the primary SHA256 duplicate key for a normalized log line."""
-
-    return hashlib.sha256(normalized_line.encode("utf-8")).hexdigest()
+from app.parser.normalization import hash_normalized_line, normalize_log_line
 
 
 class RawLogDeduplicator:
