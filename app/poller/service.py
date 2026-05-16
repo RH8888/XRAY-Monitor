@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
@@ -20,17 +19,12 @@ from app.database.repositories import (
     WatchHitRepository,
     WatchlistRepository,
 )
+from app.parser import parse_line
 from app.poller.client import ThreeXUIClient, ThreeXUIClientError
 from app.poller.deduplication import RawLogDeduplicator
 
 logger = logging.getLogger(__name__)
 
-_TIMESTAMP_RE = re.compile(r"^(?P<date>\d{4}/\d{2}/\d{2})\s+(?P<time>\d{2}:\d{2}:\d{2})\b")
-_EMAIL_RE = re.compile(r"(?:email|user|client)[:=](?P<value>[\w.+@-]+)", re.IGNORECASE)
-_INBOUND_RE = re.compile(r"\[(?P<tag>[^\[\]]+)\]")
-_HOST_RE = re.compile(r"\b(?:tcp|udp):(?P<host>\[[^\]]+\]|[^\s:]+)(?::\d+)?\b", re.IGNORECASE)
-_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
-_IPV6_RE = re.compile(r"^[0-9a-f:]+$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -41,7 +35,7 @@ class ParsedLogEntry:
     domain: str | None = None
     ip_address: str | None = None
     inbound_tag: str | None = None
-    details: dict[str, str] | None = None
+    details: dict[str, str | int | float | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -232,68 +226,27 @@ class PollerService:
 
 
 def parse_xray_log_line(line: str, *, observed_at: datetime) -> ParsedLogEntry:
-    timestamp = _parse_timestamp(line) or observed_at
-    lower_line = line.lower()
-    event_type = "xray_log"
-    if "blocked" in lower_line or "reject" in lower_line:
-        event_type = "blocked"
-    elif "direct" in lower_line:
-        event_type = "direct"
-    elif "proxy" in lower_line or "accepted" in lower_line:
-        event_type = "proxy"
-
-    client_id = _first_match_value(_EMAIL_RE, line)
-    inbound_tag = _first_match_value(_INBOUND_RE, line)
-    host = _extract_destination_host(line)
-    domain: str | None = None
-    ip_address: str | None = None
-    if host:
-        if _is_ip_address(host):
-            ip_address = host
-        else:
-            domain = host.lower()
-
+    parsed = parse_line(line, observed_at=observed_at, source="3x-ui:xraylogs")
     return ParsedLogEntry(
-        timestamp=timestamp,
-        event_type=event_type,
-        client_id=client_id,
-        domain=domain,
-        ip_address=ip_address,
-        inbound_tag=inbound_tag,
-        details={"line": line},
+        timestamp=parsed.timestamp or observed_at,
+        event_type=parsed.event_type,
+        client_id=parsed.user_identifier,
+        domain=parsed.domain,
+        ip_address=parsed.ip,
+        inbound_tag=parsed.inbound_tag,
+        details={
+            "line": parsed.raw_line,
+            "protocol": parsed.protocol,
+            "port": parsed.port,
+            "outbound_tag": parsed.outbound_tag,
+            "outbound_type": parsed.outbound_type,
+            "status": parsed.status,
+            "reason": parsed.reason,
+            "parser_name": parsed.parser_name,
+            "parser_confidence": parsed.confidence,
+            "source": parsed.source,
+        },
     )
-
-
-def _parse_timestamp(line: str) -> datetime | None:
-    match = _TIMESTAMP_RE.search(line)
-    if not match:
-        return None
-    try:
-        parsed = datetime.strptime(
-            f"{match.group('date')} {match.group('time')}", "%Y/%m/%d %H:%M:%S"
-        )
-    except ValueError:
-        return None
-    return parsed.replace(tzinfo=UTC)
-
-
-def _first_match_value(pattern: re.Pattern[str], line: str) -> str | None:
-    match = pattern.search(line)
-    if not match:
-        return None
-    return match.group("value" if "value" in pattern.groupindex else "tag")
-
-
-def _extract_destination_host(line: str) -> str | None:
-    matches = list(_HOST_RE.finditer(line))
-    if not matches:
-        return None
-    host = matches[-1].group("host").strip("[]")
-    return host.rstrip(".,;)") or None
-
-
-def _is_ip_address(host: str) -> bool:
-    return bool(_IPV4_RE.match(host) or (":" in host and _IPV6_RE.match(host)))
 
 
 def _watchlist_match_reason(watchlist: Watchlist, event: Event) -> str | None:
