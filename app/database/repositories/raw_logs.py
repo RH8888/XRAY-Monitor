@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 
 from sqlalchemy import select
@@ -40,6 +40,15 @@ class RawLogRepository:
 
     async def exists_by_hash(self, line_hash: str) -> bool:
         return await self.get_by_hash(line_hash) is not None
+
+    async def existing_hashes(self, line_hashes: Iterable[str]) -> set[str]:
+        hashes = set(line_hashes)
+        if not hashes:
+            return set()
+        result = await self._session.execute(
+            select(RawLog.line_hash).where(RawLog.line_hash.in_(hashes))
+        )
+        return set(result.scalars().all())
 
     async def list_recent(self, *, limit: int = 100, offset: int = 0) -> Sequence[RawLog]:
         result = await self._session.execute(
