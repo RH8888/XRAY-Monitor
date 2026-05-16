@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models import Event, Watchlist
+from app.database.repositories.users import UserRepository
 from app.database.repositories.watchlists import WatchHitRepository, WatchlistRepository
 from app.watchlist.matcher import (
     matches_cidr,
@@ -33,6 +34,7 @@ class WatchlistService:
     def __init__(self, session: AsyncSession | None = None) -> None:
         self._watchlists = WatchlistRepository(session) if session is not None else None
         self._watch_hits = WatchHitRepository(session) if session is not None else None
+        self._users = UserRepository(session) if session is not None else None
 
     async def list_enabled_targets(self, *, limit: int = 1000) -> list[WatchlistTarget]:
         """Return typed targets derived from enabled database watchlist rows."""
@@ -74,8 +76,47 @@ class WatchlistService:
 
         return matches
 
-    async def list_entries(self) -> list[WatchlistEntry]:
-        return []
+    async def add_entry(
+        self,
+        *,
+        client_id: str,
+        label: str,
+        domain_pattern: str | None = None,
+        ip_pattern: str | None = None,
+        limit_bytes: int | None = None,
+    ) -> Watchlist:
+        """Create a watchlist row for a user, creating the user if needed."""
+
+        if self._watchlists is None or self._users is None:
+            raise RuntimeError("WatchlistService requires an AsyncSession for database operations")
+        if not domain_pattern and not ip_pattern and limit_bytes is None:
+            raise ValueError("watchlist entry requires a domain, IP/CIDR, or byte limit")
+
+        user = await self._users.get_by_client_id(client_id)
+        if user is None:
+            user = await self._users.add(client_id=client_id)
+
+        return await self._watchlists.add(
+            user_id=user.id,
+            label=label,
+            domain_pattern=domain_pattern,
+            ip_pattern=ip_pattern,
+            limit_bytes=limit_bytes,
+        )
+
+    async def remove_entry(self, *, client_id: str, label: str) -> int:
+        if self._watchlists is None or self._users is None:
+            raise RuntimeError("WatchlistService requires an AsyncSession for database operations")
+
+        user = await self._users.get_by_client_id(client_id)
+        if user is None:
+            return 0
+        return await self._watchlists.remove_by_label(user_id=user.id, label=label)
+
+    async def list_entries(self, *, limit: int = 100) -> list[Watchlist]:
+        if self._watchlists is None:
+            return []
+        return list(await self._watchlists.list_all(limit=limit))
 
 
 def _targets_for_watchlist(watchlist: Watchlist) -> list[WatchlistTarget]:

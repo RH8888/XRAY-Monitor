@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     alert_usage_threshold_percent: int = 80
     alert_cooldown_seconds: int = 3600
     alert_send_startup_message: bool = False
+    alert_spike_threshold_count: int = 100
+    alert_spike_window_seconds: int = 300
+    alert_important_domains: tuple[str, ...] = ()
+    alert_important_ips: tuple[str, ...] = ()
 
     log_level: str = "INFO"
 
@@ -42,6 +46,15 @@ class Settings(BaseSettings):
             if not value.strip():
                 return ()
             return tuple(int(part.strip()) for part in value.split(",") if part.strip())
+        return tuple(value)
+
+    @field_validator("alert_important_domains", "alert_important_ips", mode="before")
+    @classmethod
+    def parse_csv_tuple(cls, value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        if isinstance(value, str):
+            if not value.strip():
+                return ()
+            return tuple(part.strip() for part in value.split(",") if part.strip())
         return tuple(value)
 
 

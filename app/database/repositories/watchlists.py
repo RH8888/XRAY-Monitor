@@ -56,6 +56,26 @@ class WatchlistRepository:
         )
         return result.scalars().all()
 
+    async def list_all(self, *, limit: int = 100, offset: int = 0) -> Sequence[Watchlist]:
+        result = await self._session.execute(
+            select(Watchlist).order_by(Watchlist.label, Watchlist.id).limit(limit).offset(offset)
+        )
+        return result.scalars().all()
+
+    async def get_by_label(self, *, user_id: int, label: str) -> Watchlist | None:
+        result = await self._session.execute(
+            select(Watchlist).where(Watchlist.user_id == user_id, Watchlist.label == label)
+        )
+        return result.scalar_one_or_none()
+
+    async def remove_by_label(self, *, user_id: int, label: str) -> int:
+        watchlist = await self.get_by_label(user_id=user_id, label=label)
+        if watchlist is None:
+            return 0
+        await self._session.delete(watchlist)
+        await self._session.flush()
+        return 1
+
     async def set_enabled(self, watchlist: Watchlist, *, is_enabled: bool) -> Watchlist:
         watchlist.is_enabled = is_enabled
         await self._session.flush()
