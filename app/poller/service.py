@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.alerts.service import AlertService
+from app.analytics import AnalyticsService
 from app.bot.service import TelegramBotService
 from app.config import Settings
-from app.database.models import Event
+from app.database.models import Event, User
 from app.database.repositories import (
     EventRepository,
     RawLogRepository,
@@ -149,9 +150,14 @@ class PollerService:
                 continue
 
             user_id = None
+            user = None
             if parsed.client_id:
                 user = await users.get_by_client_id(parsed.client_id)
-                user_id = user.id if user else None
+                if user is None:
+                    user = await users.add(client_id=parsed.client_id)
+                    if await self._send_new_user_alert(user):
+                        alerts_sent += 1
+                user_id = user.id
 
             event = await events.add(
                 timestamp=parsed.timestamp,
@@ -168,6 +174,15 @@ class PollerService:
             matches = await WatchlistService(session).evaluate_event(event)
             watch_hits += len(matches)
             alerts_sent += await self._send_watchlist_alerts(event, matches)
+            if event.event_type == "blocked" and await self._send_blocked_alert(event):
+                alerts_sent += 1
+            if self._is_important_destination(
+                event
+            ) and await self._send_important_destination_alert(event):
+                alerts_sent += 1
+
+        if await self._send_spike_alert(session):
+            alerts_sent += 1
 
         if skipped_duplicates:
             logger.info("duplicate raw logs skipped", extra={"count": skipped_duplicates})
@@ -181,9 +196,7 @@ class PollerService:
             alerts_sent=alerts_sent,
         )
 
-    async def _send_watchlist_alerts(
-        self, event: Event, matches: list[WatchlistMatch]
-    ) -> int:
+    async def _send_watchlist_alerts(self, event: Event, matches: list[WatchlistMatch]) -> int:
         sent_alerts = 0
         for match in matches:
             if await self._send_watchlist_alert(match, event):
@@ -193,21 +206,81 @@ class PollerService:
     async def _send_watchlist_alert(self, match: WatchlistMatch, event: Event) -> bool:
         if self._alert_service is None or self._bot_service is None:
             return False
-        alert_key = f"watchlist:{match.watchlist_id}:{event.domain or event.ip_address or event.id}"
-        if not self._alert_service.should_alert(alert_key, 100.0):
-            return False
         try:
-            await self._bot_service.send_admin_message(
-                "XRAY Monitor watchlist match\n"
-                f"Watchlist: {match.label}\n"
-                f"Reason: {match.reason}\n"
-                f"Domain: {event.domain or '-'}\n"
-                f"IP: {event.ip_address or '-'}"
+            return await self._alert_service.dispatch_watchlist_hit(
+                match=match, event=event, dispatcher=self._bot_service
             )
         except Exception:
             logger.exception("failed to send watchlist alert", extra={"event_id": event.id})
             return False
-        return True
+
+    async def _send_blocked_alert(self, event: Event) -> bool:
+        if self._alert_service is None or self._bot_service is None:
+            return False
+        try:
+            return await self._alert_service.dispatch_blocked_traffic(
+                event=event, dispatcher=self._bot_service
+            )
+        except Exception:
+            logger.exception("failed to send blocked traffic alert", extra={"event_id": event.id})
+            return False
+
+    async def _send_new_user_alert(self, user: User) -> bool:
+        if self._alert_service is None or self._bot_service is None:
+            return False
+        try:
+            return await self._alert_service.dispatch_new_user(
+                user=user, dispatcher=self._bot_service
+            )
+        except Exception:
+            logger.exception("failed to send new user alert", extra={"user_id": user.id})
+            return False
+
+    async def _send_spike_alert(self, session: AsyncSession) -> bool:
+        if self._alert_service is None or self._bot_service is None:
+            return False
+        threshold = self._settings.alert_spike_threshold_count
+        window_seconds = self._settings.alert_spike_window_seconds
+        if threshold <= 0 or window_seconds <= 0:
+            return False
+        since = datetime.now(UTC) - timedelta(seconds=window_seconds)
+        observed_count = await AnalyticsService(session).events_since(since)
+        if observed_count < threshold:
+            return False
+        try:
+            return await self._alert_service.dispatch_suspicious_spike(
+                observed_count=observed_count,
+                threshold=threshold,
+                window_seconds=window_seconds,
+                dispatcher=self._bot_service,
+            )
+        except Exception:
+            logger.exception("failed to send suspicious spike alert")
+            return False
+
+    async def _send_important_destination_alert(self, event: Event) -> bool:
+        if self._alert_service is None or self._bot_service is None:
+            return False
+        try:
+            return await self._alert_service.dispatch_important_destination(
+                event=event, dispatcher=self._bot_service
+            )
+        except Exception:
+            logger.exception(
+                "failed to send important destination alert", extra={"event_id": event.id}
+            )
+            return False
+
+    def _is_important_destination(self, event: Event) -> bool:
+        domain = (event.domain or "").lower().rstrip(".")
+        ip_address = event.ip_address or ""
+        important_domains = {
+            value.lower().rstrip(".") for value in self._settings.alert_important_domains
+        }
+        important_ips = set(self._settings.alert_important_ips)
+        return bool(
+            (domain and domain in important_domains) or (ip_address and ip_address in important_ips)
+        )
 
 
 def parse_xray_log_line(line: str, *, observed_at: datetime) -> ParsedLogEntry:

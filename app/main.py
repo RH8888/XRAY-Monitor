@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import suppress
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 
 from app.alerts.service import AlertService
 from app.bot import TelegramBotService
@@ -20,8 +20,8 @@ async def main() -> None:
 
     database = Database(settings.database_url)
     xui_client = ThreeXUIClient(settings)
-    bot = TelegramBotService(settings)
-    alert_service = AlertService(settings)
+    bot = TelegramBotService(settings, database.session_factory)
+    alert_service = AlertService(settings, dispatcher=bot)
     poller = PollerService(
         settings,
         xui_client,
@@ -44,6 +44,7 @@ async def main() -> None:
         coalesce=True,
     )
     scheduler.start()
+    bot_task = asyncio.create_task(bot.start_polling())
 
     if settings.alert_send_startup_message:
         await bot.send_admin_message("XRAY Monitor started.")
@@ -52,6 +53,9 @@ async def main() -> None:
     try:
         await asyncio.Event().wait()
     finally:
+        bot_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await bot_task
         scheduler.shutdown(wait=False)
         await xui_client.close()
         await bot.close()
