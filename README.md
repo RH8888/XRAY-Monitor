@@ -52,7 +52,7 @@ environment.
 | `XRAY_3XUI_BASE_URL` | Base URL for the 3x-ui panel. |
 | `XRAY_3XUI_USERNAME` / `XRAY_3XUI_PASSWORD` | Panel credentials for future login/session support. |
 | `XRAY_3XUI_TOKEN` | Optional bearer/API token for token-enabled deployments. |
-| `XRAY_POLL_INTERVAL_SECONDS` | Interval between polling jobs. |
+| `XRAY_POLL_INTERVAL_SECONDS` | Interval between polling jobs, defaulting to 300 seconds (5 minutes). |
 | `XRAY_LOG_COUNT` | Number of recent log records to request. |
 | `XRAY_DATABASE_URL` | SQLAlchemy async URL, defaulting to `sqlite+aiosqlite`. |
 | `XRAY_TELEGRAM_BOT_TOKEN` | Telegram bot token. |
@@ -68,6 +68,10 @@ environment.
 ```bash
 xray-monitor
 ```
+
+On startup, the service immediately requests the 3x-ui Xray log API once and then repeats the
+request every `XRAY_POLL_INTERVAL_SECONDS` seconds. Request attempts, successes, and failures are
+written to the normal `xray-monitor` application logs to make API connectivity troubleshooting easier.
 
 or:
 

@@ -90,25 +90,87 @@ class ThreeXUIClient:
             show_blocked=show_blocked,
             show_proxy=show_proxy,
         )
+        endpoint = f"/panel/api/server/xraylogs/{count}"
+        form_data = request.as_form_data()
         last_error: Exception | None = None
         for attempt in range(1, self._max_retries + 1):
             try:
-                response = await self._client.post(
-                    f"/panel/api/server/xraylogs/{count}",
-                    data=request.as_form_data(),
+                logger.info(
+                    "requesting Xray logs from 3x-ui API endpoint=%s log_count=%s attempt=%s/%s",
+                    endpoint,
+                    count,
+                    attempt,
+                    self._max_retries,
+                    extra={
+                        "endpoint": endpoint,
+                        "log_count": count,
+                        "attempt": attempt,
+                        "max_retries": self._max_retries,
+                        "has_filter": bool(request.filter),
+                    },
                 )
+                response = await self._client.post(endpoint, data=form_data)
                 response.raise_for_status()
-                return self._validate_xray_logs_payload(response.json())
+                logs = self._validate_xray_logs_payload(response.json())
+                logger.info(
+                    "xray log fetch succeeded endpoint=%s log_count=%s attempt=%s "
+                    "status_code=%s fetched_lines=%s",
+                    endpoint,
+                    count,
+                    attempt,
+                    response.status_code,
+                    len(logs.splitlines()),
+                    extra={
+                        "endpoint": endpoint,
+                        "log_count": count,
+                        "attempt": attempt,
+                        "status_code": response.status_code,
+                        "fetched_lines": len(logs.splitlines()),
+                    },
+                )
+                return logs
             except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
                 last_error = exc
+                status_code = (
+                    exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                )
                 logger.warning(
-                    "xray log fetch failed",
-                    extra={"attempt": attempt, "max_retries": self._max_retries},
+                    "xray log fetch request failed endpoint=%s log_count=%s attempt=%s/%s "
+                    "status_code=%s",
+                    endpoint,
+                    count,
+                    attempt,
+                    self._max_retries,
+                    status_code,
+                    extra={
+                        "endpoint": endpoint,
+                        "log_count": count,
+                        "attempt": attempt,
+                        "max_retries": self._max_retries,
+                        "status_code": status_code,
+                    },
                     exc_info=True,
                 )
             except ValueError as exc:
+                logger.warning(
+                    "xray log fetch returned non-JSON response endpoint=%s log_count=%s attempt=%s",
+                    endpoint,
+                    count,
+                    attempt,
+                    extra={"endpoint": endpoint, "log_count": count, "attempt": attempt},
+                    exc_info=True,
+                )
                 raise ThreeXUIClientError("3x-ui log API returned non-JSON response") from exc
             except ThreeXUIClientError:
+                logger.warning(
+                    "xray log fetch returned unsuccessful response endpoint=%s "
+                    "log_count=%s attempt=%s",
+                    endpoint,
+                    count,
+                    attempt,
+                    extra={"endpoint": endpoint, "log_count": count, "attempt": attempt},
+                    exc_info=True,
+                )
                 raise
 
             if attempt < self._max_retries:
@@ -126,7 +188,8 @@ class ThreeXUIClient:
         if not isinstance(payload, dict):
             raise ThreeXUIClientError("3x-ui log API response must be a JSON object")
         if payload.get("success") is not True:
-            raise ThreeXUIClientError("3x-ui log API response was not successful")
+            message = payload.get("msg") or payload.get("error") or "unknown API error"
+            raise ThreeXUIClientError(f"3x-ui log API response was not successful: {message}")
         logs = payload.get("obj")
         if not isinstance(logs, str):
             raise ThreeXUIClientError("3x-ui log API response obj must be a string")
