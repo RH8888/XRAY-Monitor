@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     three_xui_password: str = Field(alias="XRAY_3XUI_PASSWORD")
     three_xui_token: str | None = Field(default=None, alias="XRAY_3XUI_TOKEN")
 
-    poll_interval_seconds: int = 60
+    poll_interval_seconds: int = 300
     log_count: int = 200
 
     database_url: str = "sqlite+aiosqlite:///./data/xray-monitor.db"

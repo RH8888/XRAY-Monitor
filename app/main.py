@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import-untyped]
 
@@ -42,6 +43,7 @@ async def main() -> None:
         "interval",
         seconds=settings.poll_interval_seconds,
         id="xray_poll",
+        next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
     )
@@ -51,7 +53,10 @@ async def main() -> None:
     if settings.alert_send_startup_message:
         await bot.send_admin_message("XRAY Monitor started.")
 
-    logger.info("XRAY Monitor service started")
+    logger.info(
+        "XRAY Monitor service started",
+        extra={"poll_interval_seconds": settings.poll_interval_seconds},
+    )
     try:
         await asyncio.Event().wait()
     finally:
