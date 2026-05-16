@@ -18,7 +18,8 @@ class AlertService:
 
         now = datetime.now(UTC)
         last_sent_at = self._last_sent_at.get(key)
-        if last_sent_at and now - last_sent_at < timedelta(seconds=self._settings.alert_cooldown_seconds):
+        cooldown = timedelta(seconds=self._settings.alert_cooldown_seconds)
+        if last_sent_at and now - last_sent_at < cooldown:
             return False
 
         self._last_sent_at[key] = now
