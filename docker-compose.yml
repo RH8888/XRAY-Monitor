@@ -1,0 +1,11 @@
+services:
+  xray-monitor:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - xray-monitor-data:/app/data
+
+volumes:
+  xray-monitor-data:
