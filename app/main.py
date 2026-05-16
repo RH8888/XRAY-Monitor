@@ -19,6 +19,8 @@ async def main() -> None:
     configure_logging(settings.log_level)
 
     database = Database(settings.database_url)
+    await database.create_all()
+
     xui_client = ThreeXUIClient(settings)
     bot = TelegramBotService(settings, database.session_factory)
     alert_service = AlertService(settings, dispatcher=bot)
