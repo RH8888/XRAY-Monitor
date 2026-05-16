@@ -4,6 +4,7 @@ from contextlib import suppress
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.alerts.service import AlertService
 from app.bot import TelegramBotService
 from app.config import get_settings
 from app.database import Database
@@ -19,13 +20,20 @@ async def main() -> None:
 
     database = Database(settings.database_url)
     xui_client = ThreeXUIClient(settings)
-    poller = PollerService(settings, xui_client)
     bot = TelegramBotService(settings)
+    alert_service = AlertService(settings)
+    poller = PollerService(
+        settings,
+        xui_client,
+        database.session_factory,
+        alert_service=alert_service,
+        bot_service=bot,
+    )
     scheduler = AsyncIOScheduler(timezone="UTC")
 
     async def poll_job() -> None:
-        samples = await poller.poll_once()
-        logger.info("poll completed", extra={"sample_count": len(samples)})
+        result = await poller.poll_once()
+        logger.info("poll completed", extra={"stored_events": result.stored_events})
 
     scheduler.add_job(
         poll_job,
