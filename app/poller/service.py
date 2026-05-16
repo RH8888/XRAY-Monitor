@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from fnmatch import fnmatchcase
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -11,20 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.alerts.service import AlertService
 from app.bot.service import TelegramBotService
 from app.config import Settings
-from app.database.models import Event, Watchlist
+from app.database.models import Event
 from app.database.repositories import (
     EventRepository,
     RawLogRepository,
     UserRepository,
-    WatchHitRepository,
-    WatchlistRepository,
 )
 from app.parser import parse_line
 from app.poller.client import ThreeXUIClient, ThreeXUIClientError
 from app.poller.deduplication import RawLogDeduplicator
+from app.watchlist.service import WatchlistService
+from app.watchlist.types import WatchlistMatch
 
 logger = logging.getLogger(__name__)
-
 
 
 @dataclass(frozen=True)
@@ -167,9 +165,9 @@ class PollerService:
             )
             stored_events += 1
 
-            matched_hits, sent_alerts = await self._match_watchlists(session, event)
-            watch_hits += matched_hits
-            alerts_sent += sent_alerts
+            matches = await WatchlistService(session).evaluate_event(event)
+            watch_hits += len(matches)
+            alerts_sent += await self._send_watchlist_alerts(event, matches)
 
         if skipped_duplicates:
             logger.info("duplicate raw logs skipped", extra={"count": skipped_duplicates})
@@ -183,39 +181,26 @@ class PollerService:
             alerts_sent=alerts_sent,
         )
 
-    async def _match_watchlists(self, session: AsyncSession, event: Event) -> tuple[int, int]:
-        watchlists = await WatchlistRepository(session).list_enabled(limit=1000)
-        watch_hits = WatchHitRepository(session)
-        matched = 0
-        alerts_sent = 0
+    async def _send_watchlist_alerts(
+        self, event: Event, matches: list[WatchlistMatch]
+    ) -> int:
+        sent_alerts = 0
+        for match in matches:
+            if await self._send_watchlist_alert(match, event):
+                sent_alerts += 1
+        return sent_alerts
 
-        for watchlist in watchlists:
-            reason = _watchlist_match_reason(watchlist, event)
-            if reason is None:
-                continue
-            await watch_hits.add(
-                watchlist_id=watchlist.id,
-                event_id=event.id,
-                hit_at=datetime.now(UTC),
-                reason=reason,
-            )
-            matched += 1
-            if await self._send_watchlist_alert(watchlist, event, reason):
-                alerts_sent += 1
-
-        return matched, alerts_sent
-
-    async def _send_watchlist_alert(self, watchlist: Watchlist, event: Event, reason: str) -> bool:
+    async def _send_watchlist_alert(self, match: WatchlistMatch, event: Event) -> bool:
         if self._alert_service is None or self._bot_service is None:
             return False
-        alert_key = f"watchlist:{watchlist.id}:{event.domain or event.ip_address or event.id}"
+        alert_key = f"watchlist:{match.watchlist_id}:{event.domain or event.ip_address or event.id}"
         if not self._alert_service.should_alert(alert_key, 100.0):
             return False
         try:
             await self._bot_service.send_admin_message(
                 "XRAY Monitor watchlist match\n"
-                f"Watchlist: {watchlist.label}\n"
-                f"Reason: {reason}\n"
+                f"Watchlist: {match.label}\n"
+                f"Reason: {match.reason}\n"
                 f"Domain: {event.domain or '-'}\n"
                 f"IP: {event.ip_address or '-'}"
             )
@@ -247,13 +232,3 @@ def parse_xray_log_line(line: str, *, observed_at: datetime) -> ParsedLogEntry:
             "source": parsed.source,
         },
     )
-
-
-def _watchlist_match_reason(watchlist: Watchlist, event: Event) -> str | None:
-    if watchlist.domain_pattern and event.domain:
-        if fnmatchcase(event.domain.lower(), watchlist.domain_pattern.lower()):
-            return f"domain matched {watchlist.domain_pattern}"
-    if watchlist.ip_pattern and event.ip_address:
-        if fnmatchcase(event.ip_address, watchlist.ip_pattern):
-            return f"ip matched {watchlist.ip_pattern}"
-    return None
